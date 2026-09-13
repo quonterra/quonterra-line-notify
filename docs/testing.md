@@ -46,6 +46,8 @@ cp .env.example .env.local
 npm run dev
 ```
 
+> ポート3000を別プロジェクトの開発サーバーが使っていると、リクエストがそちらに届いて404のHTMLが返る。`lsof -nP -iTCP:3000 -sTCP:LISTEN` で確認し、使われていれば `npx next dev -p 3001` のようにポートを変えて起動し、スクリプトの第2引数(または `PORT=3001`)で指定する。JSON 以外の応答が返った場合、スクリプトは警告を出して終了コード1で終わる。
+
 別のターミナルで、以下の順に確認する。`scripts/cron-request.sh` は `.env.local` から `CRON_SECRET` を読み込み、画面には表示しない。
 
 1. 認証なしのリクエストが 401 になること
