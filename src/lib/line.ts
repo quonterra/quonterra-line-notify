@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 import type { LineMessage } from "@/lib/flex";
 import { fetchWithRetry, HttpError } from "@/lib/http";
 
-const BROADCAST_ENDPOINT = "https://api.line.me/v2/bot/message/broadcast";
+const MESSAGE_API = "https://api.line.me/v2/bot/message";
 
 export type BroadcastResult = {
   status: "sent" | "already_sent";
   requestId: string | null;
 };
+
+export type ValidationResult = { valid: true } | { valid: false; detail: string };
 
 /**
  * 友だち全員へのブロードキャスト配信。
@@ -16,20 +18,7 @@ export type BroadcastResult = {
  */
 export async function broadcast(messages: LineMessage[], token: string, retryKey: string): Promise<BroadcastResult> {
   const label = "LINE broadcast";
-  const res = await fetchWithRetry(
-    label,
-    BROADCAST_ENDPOINT,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "X-Line-Retry-Key": retryKey,
-      },
-      body: JSON.stringify({ messages }),
-    },
-    { timeoutMs: 15_000, retries: 2 },
-  );
+  const res = await postMessages(label, `${MESSAGE_API}/broadcast`, messages, token, { "X-Line-Retry-Key": retryKey }, 2);
 
   if (res.ok) return { status: "sent", requestId: res.headers.get("x-line-request-id") };
   // 同じリトライキーのリクエストがすでに受け付け済み
@@ -37,6 +26,37 @@ export async function broadcast(messages: LineMessage[], token: string, retryKey
     return { status: "already_sent", requestId: res.headers.get("x-line-accepted-request-id") };
   }
   throw new HttpError(label, res.status, (await res.text()).slice(0, 500));
+}
+
+/** 配信はせず、メッセージが LINE の仕様に合っているかだけを検証する(通数も消費しない)。 */
+export async function validateBroadcast(messages: LineMessage[], token: string): Promise<ValidationResult> {
+  const label = "LINE validate";
+  const res = await postMessages(label, `${MESSAGE_API}/validate/broadcast`, messages, token, {}, 1);
+
+  if (res.ok) return { valid: true };
+  const detail = (await res.text()).slice(0, 1000);
+  if (res.status === 400) return { valid: false, detail };
+  throw new HttpError(label, res.status, detail.slice(0, 500));
+}
+
+function postMessages(
+  label: string,
+  url: string,
+  messages: LineMessage[],
+  token: string,
+  headers: Record<string, string>,
+  retries: number,
+): Promise<Response> {
+  return fetchWithRetry(
+    label,
+    url,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ messages }),
+    },
+    { timeoutMs: 15_000, retries },
+  );
 }
 
 /** JST の日付から決まる UUID 形式のリトライキー。同じ日の配信は1回だけになる。 */

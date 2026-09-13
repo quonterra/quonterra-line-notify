@@ -4,15 +4,19 @@ import { buildFallbackMessage, buildSummaryMessage } from "@/lib/flex";
 import { jstDay } from "@/lib/format";
 import { errorMessage } from "@/lib/http";
 import { enabledIndicators, loadIndicators } from "@/lib/indicators";
-import { broadcast, dailyRetryKey } from "@/lib/line";
+import { broadcast, dailyRetryKey, validateBroadcast } from "@/lib/line";
 
 export const maxDuration = 60;
 
 const LOG = "[line-market-summary]";
 
+type Mode = "broadcast" | "dryRun" | "validate";
+
 /**
  * Vercel Cron(平日 07:00 JST)から呼ばれ、マーケットサマリーを LINE の友だち全員に配信する。
- * `?dryRun=1` を付けると配信せず、組み立てたメッセージを JSON で返す(この場合も認証は必要)。
+ * テスト用のモード(どちらも認証は必要):
+ * - `?dryRun=1`   LINE を呼ばず、組み立てたメッセージを JSON で返す
+ * - `?validate=1` LINE の検証 API でメッセージを検証する(配信しない)
  */
 export async function GET(request: Request) {
   if (!isAuthorizedCron(request)) {
@@ -20,7 +24,8 @@ export async function GET(request: Request) {
   }
 
   const config = readConfig();
-  const dryRun = new URL(request.url).searchParams.get("dryRun") === "1";
+  const params = new URL(request.url).searchParams;
+  const mode: Mode = params.get("dryRun") === "1" ? "dryRun" : params.get("validate") === "1" ? "validate" : "broadcast";
   const now = new Date();
 
   const results = await loadIndicators(enabledIndicators(config.includeLicensed), config.fredApiKey);
@@ -35,8 +40,8 @@ export async function GET(request: Request) {
     ? buildFallbackMessage(now, config.detailUrl)
     : buildSummaryMessage(results, now, config.detailUrl);
 
-  if (dryRun) {
-    return Response.json({ dryRun: true, fallback, indicators, messages: [message] });
+  if (mode === "dryRun") {
+    return Response.json({ mode, fallback, indicators, messages: [message] });
   }
 
   if (!config.lineToken) {
@@ -45,11 +50,19 @@ export async function GET(request: Request) {
   }
 
   try {
+    if (mode === "validate") {
+      const validation = await validateBroadcast([message], config.lineToken);
+      return Response.json(
+        { mode, ...validation, fallback, indicators, messages: [message] },
+        { status: validation.valid ? 200 : 422 },
+      );
+    }
+
     const result = await broadcast([message], config.lineToken, dailyRetryKey(jstDay(now).isoDate));
     console.info(LOG, "broadcast", JSON.stringify({ ...result, fallback, failed: failed.length }));
-    return Response.json({ ...result, fallback, indicators });
+    return Response.json({ mode, ...result, fallback, indicators });
   } catch (e) {
-    console.error(LOG, "broadcast failed", errorMessage(e));
-    return Response.json({ error: "LINE broadcast failed", fallback, indicators }, { status: 502 });
+    console.error(LOG, `${mode} failed`, errorMessage(e));
+    return Response.json({ error: `LINE ${mode} failed`, fallback, indicators }, { status: 502 });
   }
 }
