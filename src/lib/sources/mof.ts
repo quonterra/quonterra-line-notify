@@ -1,4 +1,6 @@
-import { fetchWithRetry, HttpError } from "@/lib/http";
+import type { Deadline } from "@/lib/deadline";
+import { request } from "@/lib/http";
+import { RETRY_POLICY } from "@/lib/timing";
 import type { Observation } from "@/lib/types";
 
 // 財務省「国債金利情報」(Shift_JIS の CSV)。当月分と、前月末までの全期間分に分かれている。
@@ -6,20 +8,23 @@ const MOF_CURRENT_MONTH = "https://www.mof.go.jp/jgbs/reference/interest_rate/jg
 const MOF_ALL = "https://www.mof.go.jp/jgbs/reference/interest_rate/data/jgbcm_all.csv";
 
 /** 日本国債の指定年限(例: "10年")の利回り(新しい順)。月初で当月分が2件未満なら全期間 CSV で補う。 */
-export async function fetchJgbYield(tenor: string): Promise<Observation[]> {
-  const current = await fetchJgbCsv(MOF_CURRENT_MONTH, tenor);
+export async function fetchJgbYield(tenor: string, deadline?: Deadline): Promise<Observation[]> {
+  const current = await fetchJgbCsv(MOF_CURRENT_MONTH, tenor, deadline);
   if (current.length >= 2) return current;
 
-  const all = await fetchJgbCsv(MOF_ALL, tenor);
+  const all = await fetchJgbCsv(MOF_ALL, tenor, deadline);
   const byDate = new Map([...all, ...current].map((o) => [o.date, o]));
   return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date));
 }
 
-async function fetchJgbCsv(url: string, tenor: string): Promise<Observation[]> {
-  const label = "MOF JGB";
-  const res = await fetchWithRetry(label, url, {}, { timeoutMs: 20_000 });
-  if (!res.ok) throw new HttpError(label, res.status);
-  const text = new TextDecoder("shift_jis").decode(await res.arrayBuffer());
+async function fetchJgbCsv(url: string, tenor: string, deadline?: Deadline): Promise<Observation[]> {
+  const text = await request({
+    label: "MOF JGB",
+    url,
+    policy: RETRY_POLICY.mof,
+    deadline,
+    read: async (res) => new TextDecoder("shift_jis").decode(await res.arrayBuffer()),
+  });
   return parseJgbCsv(text, tenor);
 }
 

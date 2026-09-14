@@ -135,10 +135,10 @@ scripts/cron-request.sh broadcast https://<preview-url>
 | 状況 | 配信内容 | HTTP | ログ |
 |---|---|---|---|
 | 認証失敗 / `CRON_SECRET` 未設定 | なし | 401 | 未設定時のみ `[auth] CRON_SECRET is not configured` |
-| 一部の指標の取得に失敗 | カード(該当する行は「取得できませんでした」) | 200 | `indicator fetch failed [...]` |
+| 一部の指標の取得に失敗 | 一時的な失敗(タイムアウト・接続エラー・429/5xx)は3秒待って取り直す。それでも失敗した行だけ「取得できませんでした」にしてカードを配信 | 200 | 取り直した場合は `indicator refetch {"recovered":[...],"stillFailed":[...]}`。失敗が残った場合は `indicator fetch failed {"dataPhaseMs":...,"failures":[...]}` |
 | 全指標の取得に失敗 | テキストのフォールバック + サイトへのリンク | 200 | `indicator fetch failed [...]` |
 | LINE トークン未設定 | なし | 500 | `LINE_CHANNEL_ACCESS_TOKEN_ACADEMY is not set` |
-| LINE が 5xx / タイムアウト | 同じリトライキーで最大2回再試行 | 200 または 502 | 失敗時は `broadcast failed LINE broadcast: HTTP ...` |
+| LINE が 5xx / タイムアウト | 同じリトライキーで最大2回再試行(LINE フェーズは15秒以内) | 200 または 502 | 失敗時は `broadcast failed {"kind":...,"attempts":...,"elapsedMs":...}` |
 | LINE が 4xx(トークン無効・通数上限など) | なし | 502 | `broadcast failed LINE broadcast: HTTP 4xx {LINE のエラー内容}` |
 | 同じ日に2回目の実行 | なし(LINE 側で重複として弾かれる) | 200 `already_sent` | `broadcast {"status":"already_sent"}` |
 
@@ -148,3 +148,27 @@ scripts/cron-request.sh broadcast https://<preview-url>
 - **配信時刻**: Hobby プランでは 07:00〜07:59 のどこかで実行される。
 - **通数**: 1回の配信で「友だち数」通を消費する。月間の上限を超えると LINE から 429 が返り、上の表の「LINE が 4xx」と同様に 502 になる。
 - **失敗の通知**: 現状、失敗は Vercel のログに出るだけ。見落としを防ぐには、Vercel の Log Drains やアラート機能と連携する必要がある。
+
+## 7. 処理時間の上限とログの見方
+
+設定値は `src/lib/timing.ts` にまとめてある。
+
+| フェーズ | 設定 | 上限 |
+|---|---|---|
+| データ取得 | FRED・ECB: 1回8秒、再試行2回、再試行前の待ち 1秒→2秒(±50% のジッター)。財務省: 1回10秒、再試行1回。一時的に失敗した指標だけ3秒後に取り直す | 35秒で打ち切り(保険の猶予 0.25秒) |
+| LINE | 1回5秒、再試行2回、待ち 0.5秒→1秒 | 15秒で打ち切り |
+| 合計 | | 最悪 50.25秒(`maxDuration` 60秒に対して約9.75秒の余裕) |
+
+`tests/timing.test.ts`(計算)と、`tests/route.test.ts` の「すべての外部 API と LINE が応答しない」テストで検証している。
+
+失敗ログ(`indicator fetch failed` / `broadcast failed`)の主な項目:
+
+| 項目 | 意味 |
+|---|---|
+| `kind: "timeout"` | 応答が遅く、`timeoutMs` 以内に返らなかった |
+| `kind: "network"` | 接続できなかった。`code` に `ECONNREFUSED`・`ENOTFOUND` などが入る |
+| `kind: "http"` | エラーステータスが返った。`status` と `detail`(本文の先頭)が入る |
+| `kind: "deadline"` | フェーズの制限時間に達し、試行を始められなかった |
+| `attempts` / `elapsedMs` | その取得での試行回数と経過時間 |
+| `stoppedByDeadline` | 制限時間のために、試行を打ち切ったかタイムアウトを縮めた |
+| `firstRound` | 取り直す前(1回目の取得)の失敗内容 |
