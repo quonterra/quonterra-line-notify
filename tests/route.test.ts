@@ -189,7 +189,7 @@ describe("refetching failed series (B)", () => {
     const body = await res.clone().json();
 
     expect(body.indicators.filter((i: IndicatorSummary) => !i.ok).map((i: IndicatorSummary) => i.id)).toEqual(["us2y", "us10y2y"]);
-    expect(JSON.stringify(sentMessages(fetchMock)[0]).match(/取得できませんでした/g)).toHaveLength(2);
+    expect(JSON.stringify(sentMessages(fetchMock)[0]).match(/取得できませんでした/g)).toHaveLength(1);
     expect(logged(infoLog, "indicator refetch")).toEqual([{ recovered: [], stillFailed: ["us2y", "us10y2y"] }]);
 
     const [entry] = logged(errorLog, "indicator fetch failed");
@@ -215,6 +215,11 @@ describe("refetching failed series (B)", () => {
     expect(body.indicators[0]).toMatchObject({ error: "FRED_API_KEY is not set", kind: "config", refetched: false });
     expect(logged(infoLog, "indicator refetch")).toEqual([]);
     expect(body.fallback).toBe(false);
+    const message = JSON.stringify(body.messages[0]);
+    expect(message).toContain("一部データを取得できませんでした");
+    expect(message).toContain("ドル円");
+    expect(message).toContain("との比較");
+    expect(message).not.toContain('出典: FRED');
   });
 });
 
@@ -226,7 +231,7 @@ describe("failure logs (C)", () => {
 
     expect(res.status).toBe(200);
     expect(body.fallback).toBe(false);
-    expect(JSON.stringify(sentMessages(fetchMock)[0]).match(/取得できませんでした/g)).toHaveLength(4);
+    expect(JSON.stringify(sentMessages(fetchMock)[0]).match(/取得できませんでした/g)).toHaveLength(1);
 
     const [entry] = logged(errorLog, "indicator fetch failed");
     expect(entry.failures.map((f: IndicatorSummary) => f.id)).toEqual(["us10y", "us2y", "us10y2y", "vix"]);
